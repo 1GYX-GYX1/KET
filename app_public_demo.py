@@ -2,43 +2,71 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-TECH_LABELS = {
-    "PT": "Pump and Treat (P&T)",
-    "ISCO": "In-Situ Chemical Oxidation (ISCO)",
-    "MNA": "Monitored Natural Attenuation (MNA)",
-    "BIO": "Bioremediation",
-    "PRB": "Permeable Reactive Barrier (PRB)",
-    "AS": "Air Sparging (AS)",
-}
+# ---------------------------------------------------------------------
+# Public demo constants
+# NOTE:
+# - Technology names are public metadata only.
+# - Recommendation scores are NOT stored in this public file.
+# - Scores are loaded from Streamlit secrets during deployment.
+# ---------------------------------------------------------------------
+TECH_METADATA = [
+    ("AOPs", "Advanced Oxidation Processes"),
+    ("AS", "Air Sparging"),
+    ("P&T", "Pump and Treat"),
+    ("ISCO", "In-Situ Chemical Oxidation"),
+    ("ISCR", "In-Situ Chemical Reduction"),
+    ("ISB", "In-Situ Bioremediation"),
+    ("SF", "Soil Flushing"),
+    ("SS", "Solidification/Stabilization"),
+    ("MNA", "Monitored Natural Attenuation"),
+    ("PRB", "Permeable Reactive Barrier"),
+]
+TECH_CODE_ORDER = [code for code, _ in TECH_METADATA]
+TECH_LABELS = {code: f"{name} ({code})" for code, name in TECH_METADATA}
 
 STATE_LABELS = {
-    "compliant": "Compliant / Green maintenance",
-    "rebound": "Rebound detected",
-    "tailing": "Tailing / Plateau detected",
+    "compliant": "Post-compliance maintenance stage",
+    "rebound": "Rebound suspected",
+    "tailing": "Tailing or plateau confirmed",
     "progressing": "Ongoing improvement",
     "insufficient_history": "Initial stage",
 }
 
-RESEARCH_PRESET = {
-    "Hydrogeological conditions": "Fractured aquifer / sandy media / moderate permeability",
-    "Soil texture and physicochemical properties": "Medium permeability; groundwater-affected zone",
-    "Secondary pollution prevention measures": "Real-time monitoring during remediation",
-    "Risk control and remediation targets": "Groundwater contaminant concentration below target threshold",
-    "Relevant industries": "Chemical manufacturing",
-    "Industry subcategory codes": "261",
-    "Organic contaminant": "Benzene",
-    "Chemical formulas": "C6H6",
-    "Contamination distribution range": "Groundwater pollution depth between 3 and 6 m",
-    "Cost": "medium",
-    "Duration": "medium",
-    "Scope of work": "Groundwater remediation",
-    "Construction requirements and impacts": "Maintain monitoring and control engineering disturbance",
+PERSPECTIVE_GROUPS = {
+    "Hydrogeological perspective": [
+        "Hydrogeological conditions",
+        "Soil texture and physicochemical properties",
+    ],
+    "Remediation objective perspective": [
+        "Secondary pollution prevention measures",
+        "Risk control and remediation targets",
+        "Relevant industries",
+        "Industry subcategory codes",
+    ],
+    "Contaminant properties perspective": [
+        "Heavy metals",
+        "Chemical symbols",
+        "Organic contaminant",
+        "Chemical formulas",
+        "Abbreviations",
+        "Other contaminants",
+    ],
+    "Site pollution characteristics perspective": [
+        "Contamination severity (optional; leave blank for automatic inference)",
+        "Contamination distribution range",
+    ],
+    "Engineering-economic perspective": [
+        "Cost",
+        "Duration",
+        "Scope of work",
+        "Construction requirements and impacts",
+    ],
 }
 
 
@@ -51,11 +79,15 @@ class TrendConfig:
     default_target_value: float = 40.0
 
 
+# ---------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
     s = str(value).strip()
     return "" if s.lower() == "nan" else s
+
 
 
 def parse_optional_float(text: Any) -> Optional[float]:
@@ -68,6 +100,7 @@ def parse_optional_float(text: Any) -> Optional[float]:
         return None
 
 
+
 def parse_time(ts: Any) -> Optional[datetime]:
     s = normalize_text(ts)
     if not s:
@@ -77,7 +110,21 @@ def parse_time(ts: Any) -> Optional[datetime]:
             return datetime.strptime(s, fmt)
         except ValueError:
             pass
-    return None
+    for fmt in ["%y年%m月", "%Y年%m月"]:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+
+def human_tech_name(code: str) -> str:
+    return TECH_LABELS.get(code, code)
+
 
 
 def severity_from_concentration(value: float, severe_threshold: float, mild_threshold: float) -> str:
@@ -88,79 +135,195 @@ def severity_from_concentration(value: float, severe_threshold: float, mild_thre
     return "moderate"
 
 
+
+def severity_phrase(severity: str) -> str:
+    return {
+        "severe": "Severe contamination scenario",
+        "moderate": "Moderate contamination scenario",
+        "mild": "Mild contamination scenario",
+    }.get(severity, "Contaminated-site scenario")
+
+
+
+def build_ket_explanation(profile_key: str, state_label: str, severity: str) -> str:
+    explanation_map = {
+        "initial_severe": "The current scenario is interpreted under the KET-aligned severe-stage setting. The score panel reflects a confidential deployment profile corresponding to an initial high-risk groundwater remediation stage.",
+        "progressing_severe": "The current scenario is interpreted under the KET-aligned progressing severe-stage setting. The score panel reflects a confidential deployment profile corresponding to continued high-intensity control under ongoing improvement.",
+        "rebound_severe": "The current scenario is interpreted under the KET-aligned rebound severe-stage setting. The score panel reflects a confidential deployment profile corresponding to rebound-sensitive control strengthening.",
+        "tailing_severe": "The current scenario is interpreted under the KET-aligned tailing severe-stage setting. The score panel reflects a confidential deployment profile corresponding to source-reduction adjustment after tailing recognition.",
+        "progressing_moderate": "The current scenario is interpreted under the KET-aligned moderate-stage setting. The score panel reflects a confidential deployment profile corresponding to balanced remediation control under a moderate contamination stage.",
+        "tailing_moderate": "The current scenario is interpreted under the KET-aligned tailing moderate-stage setting. The score panel reflects a confidential deployment profile corresponding to intensified source treatment after limited marginal improvement.",
+        "compliant_mild": "The current scenario is interpreted under the KET-aligned post-compliance mild-stage setting. The score panel reflects a confidential deployment profile corresponding to low-disturbance maintenance and long-term risk control.",
+    }
+    default_text = "The displayed technology scores are loaded from a private deployment configuration aligned with the KET framework, while confidential training assets and proprietary model parameters remain undisclosed."
+    return explanation_map.get(profile_key, default_text) + f" Current state: {STATE_LABELS.get(state_label, state_label)}. Interpreted severity: {severity_phrase(severity)}."
+
+
+# ---------------------------------------------------------------------
+# Trend analysis (public deterministic shell)
+# ---------------------------------------------------------------------
 def analyze_trend(history: List[Dict[str, Any]], current_value: float, target_value: float, config: TrendConfig) -> Dict[str, Any]:
     if current_value <= target_value:
         return {
             "state_label": "compliant",
-            "strategy_bias": "switch_to_green_or_monitoring",
-            "reasons": ["The monitored concentration is below the target threshold. A low-disturbance polishing or maintenance strategy is suggested."],
+            "diagnosis": "post_compliance_monitoring",
+            "reasons": [
+                "The monitored concentration is below the target threshold. Low-disturbance post-compliance management is appropriate."
+            ],
         }
 
     if not history:
         return {
             "state_label": "insufficient_history",
-            "strategy_bias": "collect_more_data",
-            "reasons": ["This is the initial stage and historical monitoring data are limited. A conservative initial remediation pathway is suggested."],
+            "diagnosis": "initial_startup",
+            "reasons": [
+                "Historical monitoring records are not yet available. The decision is generated under an initial-stage scenario."
+            ],
         }
 
-    prev_val = float(history[-1]["monitored_value"])
+    prev_val = float(history[-1]["concentration"])
     change_rate = (prev_val - current_value) / prev_val if prev_val > 0 else 0.0
 
     if current_value > prev_val * (1 + config.rebound_relative_threshold):
         return {
             "state_label": "rebound",
-            "strategy_bias": "strengthen_or_reintroduce_aggressive_control",
-            "reasons": ["The concentration shows a clear rebound relative to the previous observation. A stronger reduction-oriented technology is suggested."],
+            "diagnosis": "rebound_suspected",
+            "reasons": [
+                "A rebound relative to the previous observation is detected. Strengthened control should be considered."
+            ],
         }
 
     if change_rate < config.tailing_overall_improve_max:
         return {
             "state_label": "tailing",
-            "strategy_bias": "strengthen_or_reintroduce_aggressive_control",
-            "reasons": ["The improvement is limited and a tailing or plateau pattern is detected. A technology adjustment is suggested."],
+            "diagnosis": "tailing_confirmed",
+            "reasons": [
+                "The concentration decrease is limited, indicating a tailing or plateau pattern. A source-reduction adjustment should be considered."
+            ],
         }
 
     return {
         "state_label": "progressing",
-        "strategy_bias": "maintain_current",
-        "reasons": ["The concentration is still decreasing. Maintaining the current main technology pathway with continued monitoring is suggested."],
+        "diagnosis": "control_pathway_continues",
+        "reasons": [
+            "The concentration continues to decline. The current control pathway can be maintained under continued monitoring."
+        ],
     }
 
 
-def predict_demo(severity: str, state_label: str) -> List[Dict[str, Any]]:
-    if state_label == "compliant":
-        return [
-            {"code": "MNA", "score": 0.46},
-            {"code": "BIO", "score": 0.28},
-            {"code": "PRB", "score": 0.18},
-        ]
-    if state_label in {"rebound", "tailing"}:
-        return [
-            {"code": "ISCO", "score": 0.41},
-            {"code": "PT", "score": 0.31},
-            {"code": "AS", "score": 0.17},
-        ]
-    if severity == "severe":
-        return [
-            {"code": "PT", "score": 0.43},
-            {"code": "ISCO", "score": 0.34},
-            {"code": "AS", "score": 0.16},
-        ]
-    if severity == "moderate":
-        return [
-            {"code": "ISCO", "score": 0.36},
-            {"code": "PRB", "score": 0.24},
-            {"code": "PT", "score": 0.20},
-        ]
-    return [
-        {"code": "MNA", "score": 0.39},
-        {"code": "BIO", "score": 0.26},
-        {"code": "PRB", "score": 0.21},
-    ]
+# ---------------------------------------------------------------------
+# Private score profile loader
+# ---------------------------------------------------------------------
+def get_private_score_profiles() -> Dict[str, Dict[str, float]]:
+    """
+    Scores are loaded from Streamlit secrets so the public repository does not
+    expose confidential technology-score settings.
+    """
+    if "score_profiles" not in st.secrets:
+        return {}
+
+    profiles_raw = st.secrets["score_profiles"]
+    profiles: Dict[str, Dict[str, float]] = {}
+    for profile_name, profile_values in profiles_raw.items():
+        profiles[profile_name] = {str(k): float(v) for k, v in dict(profile_values).items()}
+    return profiles
 
 
-def human_tech_name(code: str) -> str:
-    return TECH_LABELS.get(code, code)
+
+def choose_profile_key(history: List[Dict[str, Any]], severity: str, trend: Dict[str, Any]) -> str:
+    state = trend["state_label"]
+    if state == "compliant":
+        return "compliant_mild"
+    if not history:
+        return f"initial_{severity}"
+    if state == "rebound":
+        return f"rebound_{severity}"
+    if state == "tailing":
+        return f"tailing_{severity}"
+    return f"progressing_{severity}"
+
+
+
+def resolve_score_profile(profile_key: str, profiles: Dict[str, Dict[str, float]]) -> Dict[str, float]:
+    if profile_key in profiles:
+        return profiles[profile_key]
+    if profile_key.endswith("_mild") and "compliant_mild" in profiles:
+        return profiles["compliant_mild"]
+    return {}
+
+
+
+def build_score_table(score_profile: Dict[str, float]) -> pd.DataFrame:
+    rows = []
+    for code in TECH_CODE_ORDER:
+        score = float(score_profile.get(code, 0.0))
+        rows.append(
+            {
+                "Technology": human_tech_name(code),
+                "Code": code,
+                "KET-informed recommendation score": score,
+            }
+        )
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("KET-informed recommendation score", ascending=False).reset_index(drop=True)
+    return df
+
+
+
+def top_recommendation(score_df: pd.DataFrame) -> Tuple[str, str, float]:
+    if score_df.empty:
+        return "", "", 0.0
+    row = score_df.iloc[0]
+    return str(row["Code"]), str(row["Technology"]), float(row["KET-informed recommendation score"])
+
+
+# ---------------------------------------------------------------------
+# Figures and display helpers
+# ---------------------------------------------------------------------
+def make_trend_figure(df: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    if df.empty:
+        fig.update_layout(template="plotly_white", height=420, title="No monitoring history yet")
+        return fig
+
+    x = [parse_time(x) or x for x in df["date"]]
+    y = df["concentration"]
+    text = df["technology_code"].fillna("").astype(str).tolist()
+
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y,
+            mode="lines+markers+text",
+            text=text,
+            textposition="top center",
+            line=dict(color="#385a75", width=3),
+            marker=dict(size=8, color="#385a75", line=dict(color="#ffffff", width=1)),
+            hovertemplate="Time: %{x}<br>Monitored value: %{y}<br>Technology: %{text}<extra></extra>",
+            showlegend=False,
+        )
+    )
+
+    if df["target_value"].notna().any():
+        target = float(df["target_value"].dropna().iloc[-1])
+        fig.add_hline(
+            y=target,
+            line=dict(color="#9c6b32", width=2, dash="dash"),
+            annotation_text=f"Target {target}",
+            annotation_position="bottom left",
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=460,
+        margin=dict(l=20, r=20, t=50, b=20),
+        title="KET-guided target-contaminant concentration trend and remediation recommendation evolution",
+        xaxis_title="Monitoring time",
+        yaxis_title="Monitored value",
+    )
+    return fig
+
 
 
 def metric_box(label: str, value: str, sub: str = "") -> None:
@@ -173,71 +336,39 @@ def metric_box(label: str, value: str, sub: str = "") -> None:
     )
 
 
-def make_trend_figure(df: pd.DataFrame, indicator_name: str) -> go.Figure:
-    fig = go.Figure()
-    if df.empty:
-        fig.update_layout(template="plotly_white", height=420, title="No monitoring history yet")
-        return fig
+# ---------------------------------------------------------------------
+# Session history
+# ---------------------------------------------------------------------
+def init_history() -> List[Dict[str, Any]]:
+    if "demo_history" not in st.session_state:
+        st.session_state["demo_history"] = []
+    return st.session_state["demo_history"]
 
-    x = [parse_time(x) or x for x in df["Time"]]
-    y = df["Monitored value"]
-    text = df["Current recommendation"].fillna("").astype(str).tolist()
 
-    fig.add_trace(
-        go.Scatter(
-            x=x,
-            y=y,
-            mode="lines+markers+text",
-            text=text,
-            textposition="top center",
-            line=dict(color="#2a4a63", width=3),
-            marker=dict(size=9, color="#2a4a63", line=dict(color="#ffffff", width=1)),
-            hovertemplate="Time: %{x}<br>Monitored value: %{y}<br>Recommendation: %{text}<extra></extra>",
-        )
-    )
 
-    if df["Target value"].notna().any():
-        target = float(df["Target value"].dropna().iloc[-1])
-        fig.add_hline(
-            y=target,
-            line=dict(color="#8a6b3f", width=2, dash="dash"),
-            annotation_text=f"Target {target}",
-            annotation_position="top left",
-        )
+def append_history(record: Dict[str, Any]) -> None:
+    st.session_state["demo_history"].append(record)
 
-    fig.update_layout(
-        template="plotly_white",
-        height=460,
-        margin=dict(l=20, r=20, t=50, b=20),
-        title=f"{indicator_name} concentration trend and recommendation evolution",
-        xaxis_title="Monitoring time",
-        yaxis_title="Monitored value",
-    )
-    return fig
+
+
+def clear_history() -> None:
+    st.session_state["demo_history"] = []
+
 
 
 def history_to_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
-    rows = []
-    for rec in records:
-        rows.append(
-            {
-                "Time": rec.get("timestamp"),
-                "Monitored value": rec.get("monitored_value"),
-                "Target value": rec.get("target_value"),
-                "Severity": rec.get("severity", ""),
-                "Current recommendation": human_tech_name(rec.get("final_single_tech", "")),
-                "State": STATE_LABELS.get(rec.get("state_label", ""), rec.get("state_label", "")),
-                "Explanation": " ".join(rec.get("reasons", [])),
-            }
-        )
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(records)
     if not df.empty:
-        df = df.assign(_sort=df["Time"].apply(parse_time)).sort_values("_sort", ascending=True).drop(columns=["_sort"])
+        df = df.assign(_sort=df["date"].apply(parse_time)).sort_values("_sort", ascending=True).drop(columns=["_sort"])
     return df
 
 
+# ---------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------
 def main() -> None:
-    st.set_page_config(page_title="Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites", layout="wide")
+    st.set_page_config(page_title="KET-Based Decision Support System", layout="wide")
+
     st.markdown(
         """
         <style>
@@ -245,132 +376,152 @@ def main() -> None:
         section[data-testid="stSidebar"] { background-color: #eef2f6; }
         .block-container { max-width: 1380px; padding-top: 1.2rem; padding-bottom: 2rem; }
         .title-box { background: #ffffff; border: 1px solid #d9e0e7; border-left: 6px solid #24415c; border-radius: 12px; padding: 1rem 1.1rem 0.85rem 1.1rem; margin-bottom: 0.9rem; }
-        .title-box h1 { font-size: 1.65rem; margin: 0; color: #1e3449; font-weight: 700; }
+        .title-box h1 { font-size: 1.75rem; margin: 0; color: #1e3449; font-weight: 700; }
         .card { background: #ffffff; border: 1px solid #d9e0e7; border-radius: 12px; padding: 0.95rem 1rem; margin-bottom: 0.8rem; }
         .section-head { color: #1e3449; font-size: 1.05rem; font-weight: 700; margin: 0.2rem 0 0.75rem 0; }
+        .info-box { background: #f8fbff; border: 1px solid #d9e7f2; border-radius: 10px; padding: 0.8rem 0.9rem; line-height: 1.7; color: #34506b; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="title-box"><h1>Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites</h1></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="title-box"><h1>KET-Based Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites</h1></div>',
+        unsafe_allow_html=True,
+    )
 
-    if "history_records" not in st.session_state:
-        st.session_state.history_records = []
-
-    st.sidebar.header("Site feature inputs")
-    hydro = st.sidebar.text_area("Hydrogeological conditions", value=RESEARCH_PRESET["Hydrogeological conditions"], height=100)
-    soil = st.sidebar.text_area("Soil texture and physicochemical properties", value=RESEARCH_PRESET["Soil texture and physicochemical properties"], height=80)
-    spm = st.sidebar.text_area("Secondary pollution prevention measures", value=RESEARCH_PRESET["Secondary pollution prevention measures"], height=80)
-    target_text = st.sidebar.text_area("Risk control and remediation targets", value=RESEARCH_PRESET["Risk control and remediation targets"], height=80)
-    org = st.sidebar.text_input("Organic contaminant", value=RESEARCH_PRESET["Organic contaminant"])
-    formula = st.sidebar.text_input("Chemical formulas", value=RESEARCH_PRESET["Chemical formulas"])
-    rel_ind = st.sidebar.text_input("Relevant industries", value=RESEARCH_PRESET["Relevant industries"])
-    ind_code = st.sidebar.text_input("Industry subcategory codes", value=RESEARCH_PRESET["Industry subcategory codes"])
-    severity_input = st.sidebar.text_input("Contamination severity (optional, auto-detected if blank)", value="")
-    cont_range = st.sidebar.text_input("Contamination distribution range", value=RESEARCH_PRESET["Contamination distribution range"])
-    cost = st.sidebar.text_input("Cost", value=RESEARCH_PRESET["Cost"])
-    duration = st.sidebar.text_input("Duration", value=RESEARCH_PRESET["Duration"])
-    scope = st.sidebar.text_input("Scope of work", value=RESEARCH_PRESET["Scope of work"])
-    impact = st.sidebar.text_area("Construction requirements and impacts", value=RESEARCH_PRESET["Construction requirements and impacts"], height=80)
+    st.markdown(
+        '<div class="card"><div class="section-head">Framework note</div><div class="info-box">This public interface is aligned with the five-perspective input structure and stage-wise output presentation of the KET framework. Confidential training data, proprietary weights, and deployment-specific score profiles are not exposed in the public repository.</div></div>',
+        unsafe_allow_html=True,
+    )
 
     config = TrendConfig()
-    with st.sidebar.expander("Threshold parameters", expanded=False):
-        config.severe_threshold = st.number_input("Severe threshold", min_value=0.0, value=400.0, step=10.0)
-        config.mild_threshold = st.number_input("Mild threshold", min_value=0.0, value=50.0, step=1.0)
-        config.default_target_value = st.number_input("Default target value", min_value=0.0, value=40.0, step=1.0)
-        config.rebound_relative_threshold = st.number_input("Rebound threshold", min_value=0.0, value=0.50, step=0.05)
-        config.tailing_overall_improve_max = st.number_input("Tailing threshold", min_value=0.0, max_value=0.99, value=0.30, step=0.05)
+    profiles = get_private_score_profiles()
+    history = init_history()
+
+    with st.sidebar:
+        st.header("KET-aligned site feature input")
+        values: Dict[str, str] = {}
+        for group_name, fields in PERSPECTIVE_GROUPS.items():
+            st.markdown(f"**{group_name}**")
+            for label in fields:
+                if label in {
+                    "Hydrogeological conditions",
+                    "Soil texture and physicochemical properties",
+                    "Secondary pollution prevention measures",
+                    "Risk control and remediation targets",
+                    "Construction requirements and impacts",
+                }:
+                    values[label] = st.text_area(label, value="", height=90)
+                else:
+                    values[label] = st.text_input(label, value="")
+
+        with st.expander("Adjustable interpretation parameters", expanded=False):
+            config.severe_threshold = st.number_input("Severe threshold", min_value=0.0, value=400.0, step=10.0)
+            config.mild_threshold = st.number_input("Mild threshold", min_value=0.0, value=50.0, step=1.0)
+            config.default_target_value = st.number_input("Default target value", min_value=0.0, value=40.0, step=1.0)
+            config.rebound_relative_threshold = st.number_input("Relative rebound threshold", min_value=0.0, value=0.50, step=0.05)
+            config.tailing_overall_improve_max = st.number_input("Maximum overall improvement for tailing recognition", min_value=0.0, max_value=0.99, value=0.30, step=0.05)
 
     st.markdown('<div class="card"><div class="section-head">Dynamic monitoring input</div>', unsafe_allow_html=True)
-    c1, c2 = st.columns([1.2, 1.0])
+    c1, c2 = st.columns(2)
     with c1:
-        timestamp = st.text_input("Current monitoring time", value="2026-04")
+        timestamp = st.text_input("Current monitoring time", value="")
     with c2:
-        monitored_value_text = st.text_input("Current monitored value (μg/L)", value="120")
-    b1, b2 = st.columns([1.1, 1.1])
-    run_btn = b1.button("Run decision", use_container_width=True)
-    reset_btn = b2.button("Clear current browser session history", use_container_width=True)
+        monitored_value_text = st.text_input("Current monitored value (μg/L)", value="")
+
+    b1, b2 = st.columns(2)
+    run_btn = b1.button("Run KET-aligned decision", use_container_width=True)
+    clear_btn = b2.button("Clear current browser session history", use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if reset_btn:
-        st.session_state.history_records = []
-        st.success("The current browser session history has been cleared.")
+    if clear_btn:
+        clear_history()
+        st.success("Browser-session history has been cleared.")
 
     if run_btn:
         monitored_value = parse_optional_float(monitored_value_text)
-        target_value = float(config.default_target_value)
         if monitored_value is None:
-            st.error("The monitored value cannot be empty and must be numeric.")
+            st.error("Please enter a valid monitored value.")
+        elif not profiles:
+            st.error("Private KET score profiles have not been configured in Streamlit secrets yet.")
         else:
-            severity = normalize_text(severity_input).lower()
-            if not severity:
-                severity = severity_from_concentration(monitored_value, config.severe_threshold, config.mild_threshold)
+            severity_text = normalize_text(values["Contamination severity (optional; leave blank for automatic inference)"]).lower()
+            if severity_text in {"severe", "moderate", "mild"}:
+                severity = severity_text
+            else:
+                severity = severity_from_concentration(
+                    monitored_value,
+                    config.severe_threshold,
+                    config.mild_threshold,
+                )
 
-            trend = analyze_trend(st.session_state.history_records, monitored_value, target_value, config)
-            ranking = predict_demo(severity, trend["state_label"])
-            final_single_tech = ranking[0]["code"]
+            trend = analyze_trend(history, monitored_value, config.default_target_value, config)
+            profile_key = choose_profile_key(history, severity, trend)
+            score_profile = resolve_score_profile(profile_key, profiles)
 
-            st.session_state.history_records.append(
-                {
-                    "timestamp": timestamp,
-                    "monitored_value": monitored_value,
-                    "target_value": target_value,
-                    "severity": severity,
-                    "state_label": trend["state_label"],
-                    "reasons": trend["reasons"],
-                    "final_single_tech": final_single_tech,
-                    "ranking": ranking,
-                    "snapshot": {
-                        "Hydrogeological conditions": hydro,
-                        "Soil texture and physicochemical properties": soil,
-                        "Secondary pollution prevention measures": spm,
-                        "Risk control and remediation targets": target_text,
-                        "Organic contaminant": org,
-                        "Chemical formulas": formula,
-                        "Relevant industries": rel_ind,
-                        "Industry subcategory codes": ind_code,
-                        "Contamination distribution range": cont_range,
-                        "Cost": cost,
-                        "Duration": duration,
-                        "Scope of work": scope,
-                        "Construction requirements and impacts": impact,
-                    },
+            if not score_profile:
+                st.error(f"No private KET score profile was found for scenario: {profile_key}")
+            else:
+                score_df = build_score_table(score_profile)
+                tech_code, tech_name, tech_score = top_recommendation(score_df)
+                record = {
+                    "date": timestamp,
+                    "concentration": monitored_value,
+                    "target_value": config.default_target_value,
+                    "phase": profile_key,
+                    "severity_feature": severity_phrase(severity),
+                    "technology": tech_name,
+                    "technology_code": tech_code,
+                    "diagnosis": trend["diagnosis"],
+                    "engineering_note": " ".join(trend["reasons"]),
+                    "ket_note": build_ket_explanation(profile_key, trend["state_label"], severity),
+                    "recommendation_score": tech_score,
                 }
-            )
-            st.success("The demonstration decision has been generated.")
+                append_history(record)
+                history = init_history()
+                st.success("Decision completed and added to the current browser session history.")
 
-    records = st.session_state.history_records
-    if records:
-        latest = records[-1]
+    history_df = history_to_df(history)
 
-        st.markdown('<div class="card"><div class="section-head">Current status assessment</div>', unsafe_allow_html=True)
-        cs1, cs2 = st.columns([1.0, 1.0])
-        with cs1:
-            metric_box("Engine state", STATE_LABELS.get(latest["state_label"], latest["state_label"]), "Rule-based demonstration engine")
-        with cs2:
-            metric_box("Current monitoring summary", f'{latest["monitored_value"]:.2f} μg/L', f'Target {latest["target_value"]:.2f} μg/L')
+    if history_df.empty:
+        st.info("No recommendation has been generated in this browser session yet.")
+    else:
+        latest = history_df.iloc[-1]
+        st.markdown('<div class="card"><div class="section-head">Current KET-aligned decision summary</div>', unsafe_allow_html=True)
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            metric_box("Current state", latest["diagnosis"], latest["severity_feature"])
+        with m2:
+            metric_box("Recommended technology", latest["technology"], latest["technology_code"])
+        with m3:
+            metric_box("Top KET-informed score", f"{float(latest['recommendation_score']):.1f}", latest["phase"])
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><div class="section-head">Current recommendation</div>', unsafe_allow_html=True)
-        st.write(f"**Recommended technology:** {human_tech_name(latest['final_single_tech'])}")
-        st.write(f"**Interpretation:** {' '.join(latest['reasons'])}")
-        rank_df = pd.DataFrame(
-            [
-                {"Rank": idx + 1, "Technology": human_tech_name(item["code"]), "Score": item["score"]}
-                for idx, item in enumerate(latest["ranking"])
-            ]
+        st.markdown('<div class="card"><div class="section-head">KET-informed technology scores</div>', unsafe_allow_html=True)
+        latest_phase = str(latest["phase"])
+        latest_score_df = build_score_table(resolve_score_profile(latest_phase, profiles))
+        st.dataframe(latest_score_df[["Technology", "KET-informed recommendation score"]], use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card"><div class="section-head">Engineering interpretation</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="info-box">{latest["engineering_note"]}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card"><div class="section-head">KET framework interpretation</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="info-box">{latest["ket_note"]}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card"><div class="section-head">KET-guided target-contaminant concentration trend and recommendation evolution</div>', unsafe_allow_html=True)
+        st.plotly_chart(make_trend_figure(history_df), use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card"><div class="section-head">Historical KET-aligned decision log</div>', unsafe_allow_html=True)
+        st.dataframe(
+            history_df[["date", "concentration", "phase", "severity_feature", "technology", "diagnosis"]],
+            use_container_width=True,
+            hide_index=True,
         )
-        st.dataframe(rank_df, use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        hist_df = history_to_df(records)
-        st.markdown('<div class="card"><div class="section-head">Historical monitoring sequence</div>', unsafe_allow_html=True)
-        st.plotly_chart(make_trend_figure(hist_df, "Target contaminant"), use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="card"><div class="section-head">Decision log</div>', unsafe_allow_html=True)
-        st.dataframe(hist_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
 
