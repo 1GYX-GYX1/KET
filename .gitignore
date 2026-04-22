@@ -1,0 +1,8 @@
+*.pth
+Dataset.csv
+rimt_mapping.csv
+platform_history_current_stage.json
+__pycache__/
+*.pyc
+.env
+.secrets.toml
