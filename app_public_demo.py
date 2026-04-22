@@ -8,14 +8,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-
-# =========================================================
-# 公开演示版说明
-# 1. 本文件是“平台演示开源版”，不调用真实训练数据、模型权重或私有映射文件
-# 2. 仅用于界面展示、流程演示和在线访问链接生成
-# 3. 若后续需要接入私有模型，可将 predict_demo() 替换为私有 API 调用
-# =========================================================
-
 TECH_LABELS = {
     "PT": "Pump and Treat (P&T)",
     "ISCO": "In-Situ Chemical Oxidation (ISCO)",
@@ -26,11 +18,11 @@ TECH_LABELS = {
 }
 
 STATE_LABELS = {
-    "compliant": "达标绿色维持",
-    "rebound": "反弹识别",
-    "tailing": "拖尾/平台识别",
-    "progressing": "持续改善",
-    "insufficient_history": "启动阶段",
+    "compliant": "Compliant / Green maintenance",
+    "rebound": "Rebound detected",
+    "tailing": "Tailing / Plateau detected",
+    "progressing": "Ongoing improvement",
+    "insufficient_history": "Initial stage",
 }
 
 RESEARCH_PRESET = {
@@ -97,21 +89,18 @@ def severity_from_concentration(value: float, severe_threshold: float, mild_thre
 
 
 def analyze_trend(history: List[Dict[str, Any]], current_value: float, target_value: float, config: TrendConfig) -> Dict[str, Any]:
-    """公开演示版状态识别逻辑。
-    说明：这是规则化的演示引擎，不是论文中的真实核心模型。
-    """
     if current_value <= target_value:
         return {
             "state_label": "compliant",
             "strategy_bias": "switch_to_green_or_monitoring",
-            "reasons": ["当前监测值已低于目标值，建议转入绿色维持或抛光阶段。"],
+            "reasons": ["The monitored concentration is below the target threshold. A low-disturbance polishing or maintenance strategy is suggested."],
         }
 
     if not history:
         return {
             "state_label": "insufficient_history",
             "strategy_bias": "collect_more_data",
-            "reasons": ["当前为启动阶段，历史数据不足，先采用偏稳健的初始修复策略。"],
+            "reasons": ["This is the initial stage and historical monitoring data are limited. A conservative initial remediation pathway is suggested."],
         }
 
     prev_val = float(history[-1]["monitored_value"])
@@ -121,28 +110,24 @@ def analyze_trend(history: List[Dict[str, Any]], current_value: float, target_va
         return {
             "state_label": "rebound",
             "strategy_bias": "strengthen_or_reintroduce_aggressive_control",
-            "reasons": ["当前浓度相较上一期明显反弹，建议重新采用更强的削减型技术。"],
+            "reasons": ["The concentration shows a clear rebound relative to the previous observation. A stronger reduction-oriented technology is suggested."],
         }
 
     if change_rate < config.tailing_overall_improve_max:
         return {
             "state_label": "tailing",
             "strategy_bias": "strengthen_or_reintroduce_aggressive_control",
-            "reasons": ["当前改善幅度有限，出现拖尾或平台现象，建议技术调整。"],
+            "reasons": ["The improvement is limited and a tailing or plateau pattern is detected. A technology adjustment is suggested."],
         }
 
     return {
         "state_label": "progressing",
         "strategy_bias": "maintain_current",
-        "reasons": ["当前浓度仍在下降，建议维持主技术路径并继续监测。"],
+        "reasons": ["The concentration is still decreasing. Maintaining the current main technology pathway with continued monitoring is suggested."],
     }
 
 
-
 def predict_demo(severity: str, state_label: str) -> List[Dict[str, Any]]:
-    """脱敏演示版推荐器。
-    不使用真实模型，仅模拟一个合理的输出形式。
-    """
     if state_label == "compliant":
         return [
             {"code": "MNA", "score": 0.46},
@@ -174,10 +159,8 @@ def predict_demo(severity: str, state_label: str) -> List[Dict[str, Any]]:
     ]
 
 
-
 def human_tech_name(code: str) -> str:
     return TECH_LABELS.get(code, code)
-
 
 
 def metric_box(label: str, value: str, sub: str = "") -> None:
@@ -190,16 +173,15 @@ def metric_box(label: str, value: str, sub: str = "") -> None:
     )
 
 
-
 def make_trend_figure(df: pd.DataFrame, indicator_name: str) -> go.Figure:
     fig = go.Figure()
     if df.empty:
-        fig.update_layout(template="plotly_white", height=420, title="暂无历史监测序列")
+        fig.update_layout(template="plotly_white", height=420, title="No monitoring history yet")
         return fig
 
-    x = [parse_time(x) or x for x in df["时间"]]
-    y = df["监测值"]
-    text = df["当前建议"].fillna("").astype(str).tolist()
+    x = [parse_time(x) or x for x in df["Time"]]
+    y = df["Monitored value"]
+    text = df["Current recommendation"].fillna("").astype(str).tolist()
 
     fig.add_trace(
         go.Scatter(
@@ -210,16 +192,16 @@ def make_trend_figure(df: pd.DataFrame, indicator_name: str) -> go.Figure:
             textposition="top center",
             line=dict(color="#2a4a63", width=3),
             marker=dict(size=9, color="#2a4a63", line=dict(color="#ffffff", width=1)),
-            hovertemplate="时间: %{x}<br>监测值: %{y}<br>当前建议: %{text}<extra></extra>",
+            hovertemplate="Time: %{x}<br>Monitored value: %{y}<br>Recommendation: %{text}<extra></extra>",
         )
     )
 
-    if df["目标值"].notna().any():
-        target = float(df["目标值"].dropna().iloc[-1])
+    if df["Target value"].notna().any():
+        target = float(df["Target value"].dropna().iloc[-1])
         fig.add_hline(
             y=target,
             line=dict(color="#8a6b3f", width=2, dash="dash"),
-            annotation_text=f"目标值 {target}",
+            annotation_text=f"Target {target}",
             annotation_position="top left",
         )
 
@@ -227,12 +209,11 @@ def make_trend_figure(df: pd.DataFrame, indicator_name: str) -> go.Figure:
         template="plotly_white",
         height=460,
         margin=dict(l=20, r=20, t=50, b=20),
-        title=f"{indicator_name} 浓度变化与技术建议演化",
-        xaxis_title="监测时间",
-        yaxis_title="监测值",
+        title=f"{indicator_name} concentration trend and recommendation evolution",
+        xaxis_title="Monitoring time",
+        yaxis_title="Monitored value",
     )
     return fig
-
 
 
 def history_to_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -240,24 +221,23 @@ def history_to_df(records: List[Dict[str, Any]]) -> pd.DataFrame:
     for rec in records:
         rows.append(
             {
-                "时间": rec.get("timestamp"),
-                "监测值": rec.get("monitored_value"),
-                "目标值": rec.get("target_value"),
-                "污染程度": rec.get("severity", ""),
-                "当前建议": human_tech_name(rec.get("final_single_tech", "")),
-                "状态判定": STATE_LABELS.get(rec.get("state_label", ""), rec.get("state_label", "")),
-                "判定说明": " ".join(rec.get("reasons", [])),
+                "Time": rec.get("timestamp"),
+                "Monitored value": rec.get("monitored_value"),
+                "Target value": rec.get("target_value"),
+                "Severity": rec.get("severity", ""),
+                "Current recommendation": human_tech_name(rec.get("final_single_tech", "")),
+                "State": STATE_LABELS.get(rec.get("state_label", ""), rec.get("state_label", "")),
+                "Explanation": " ".join(rec.get("reasons", [])),
             }
         )
     df = pd.DataFrame(rows)
     if not df.empty:
-        df = df.assign(_sort=df["时间"].apply(parse_time)).sort_values("_sort", ascending=True).drop(columns=["_sort"])
+        df = df.assign(_sort=df["Time"].apply(parse_time)).sort_values("_sort", ascending=True).drop(columns=["_sort"])
     return df
 
 
-
 def main() -> None:
-    st.set_page_config(page_title="污染场地动态修复策略智能决策系统（公开演示版）", layout="wide")
+    st.set_page_config(page_title="Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites", layout="wide")
     st.markdown(
         """
         <style>
@@ -273,13 +253,12 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="title-box"><h1>污染场地动态修复策略智能决策系统（公开演示版）</h1></div>', unsafe_allow_html=True)
-    st.info("此版本为公开演示版，不包含真实训练数据、真实模型权重或私有知识先验，仅用于展示平台流程与交互界面。")
+    st.markdown('<div class="title-box"><h1>Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites</h1></div>', unsafe_allow_html=True)
 
     if "history_records" not in st.session_state:
         st.session_state.history_records = []
 
-    st.sidebar.header("研究区特征输入")
+    st.sidebar.header("Site feature inputs")
     hydro = st.sidebar.text_area("Hydrogeological conditions", value=RESEARCH_PRESET["Hydrogeological conditions"], height=100)
     soil = st.sidebar.text_area("Soil texture and physicochemical properties", value=RESEARCH_PRESET["Soil texture and physicochemical properties"], height=80)
     spm = st.sidebar.text_area("Secondary pollution prevention measures", value=RESEARCH_PRESET["Secondary pollution prevention measures"], height=80)
@@ -288,7 +267,7 @@ def main() -> None:
     formula = st.sidebar.text_input("Chemical formulas", value=RESEARCH_PRESET["Chemical formulas"])
     rel_ind = st.sidebar.text_input("Relevant industries", value=RESEARCH_PRESET["Relevant industries"])
     ind_code = st.sidebar.text_input("Industry subcategory codes", value=RESEARCH_PRESET["Industry subcategory codes"])
-    severity_input = st.sidebar.text_input("Contamination severity (可选，留空自动判断)", value="")
+    severity_input = st.sidebar.text_input("Contamination severity (optional, auto-detected if blank)", value="")
     cont_range = st.sidebar.text_input("Contamination distribution range", value=RESEARCH_PRESET["Contamination distribution range"])
     cost = st.sidebar.text_input("Cost", value=RESEARCH_PRESET["Cost"])
     duration = st.sidebar.text_input("Duration", value=RESEARCH_PRESET["Duration"])
@@ -296,33 +275,33 @@ def main() -> None:
     impact = st.sidebar.text_area("Construction requirements and impacts", value=RESEARCH_PRESET["Construction requirements and impacts"], height=80)
 
     config = TrendConfig()
-    with st.sidebar.expander("演示版阈值参数", expanded=False):
-        config.severe_threshold = st.number_input("Severe 阈值", min_value=0.0, value=400.0, step=10.0)
-        config.mild_threshold = st.number_input("Mild 阈值", min_value=0.0, value=50.0, step=1.0)
-        config.default_target_value = st.number_input("默认目标值", min_value=0.0, value=40.0, step=1.0)
-        config.rebound_relative_threshold = st.number_input("反弹阈值", min_value=0.0, value=0.50, step=0.05)
-        config.tailing_overall_improve_max = st.number_input("拖尾判定阈值", min_value=0.0, max_value=0.99, value=0.30, step=0.05)
+    with st.sidebar.expander("Threshold parameters", expanded=False):
+        config.severe_threshold = st.number_input("Severe threshold", min_value=0.0, value=400.0, step=10.0)
+        config.mild_threshold = st.number_input("Mild threshold", min_value=0.0, value=50.0, step=1.0)
+        config.default_target_value = st.number_input("Default target value", min_value=0.0, value=40.0, step=1.0)
+        config.rebound_relative_threshold = st.number_input("Rebound threshold", min_value=0.0, value=0.50, step=0.05)
+        config.tailing_overall_improve_max = st.number_input("Tailing threshold", min_value=0.0, max_value=0.99, value=0.30, step=0.05)
 
-    st.markdown('<div class="card"><div class="section-head">动态监测输入</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><div class="section-head">Dynamic monitoring input</div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1.2, 1.0])
     with c1:
-        timestamp = st.text_input("当前监测时间", value="2026-04")
+        timestamp = st.text_input("Current monitoring time", value="2026-04")
     with c2:
-        monitored_value_text = st.text_input("当前监测值 (μg/L)", value="120")
+        monitored_value_text = st.text_input("Current monitored value (μg/L)", value="120")
     b1, b2 = st.columns([1.1, 1.1])
-    run_btn = b1.button("运行演示决策", use_container_width=True)
-    reset_btn = b2.button("清空本次浏览器会话历史", use_container_width=True)
+    run_btn = b1.button("Run decision", use_container_width=True)
+    reset_btn = b2.button("Clear current browser session history", use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     if reset_btn:
         st.session_state.history_records = []
-        st.success("已清空当前浏览器会话历史。")
+        st.success("The current browser session history has been cleared.")
 
     if run_btn:
         monitored_value = parse_optional_float(monitored_value_text)
         target_value = float(config.default_target_value)
         if monitored_value is None:
-            st.error("当前监测值不能为空，且必须是数字。")
+            st.error("The monitored value cannot be empty and must be numeric.")
         else:
             severity = normalize_text(severity_input).lower()
             if not severity:
@@ -359,23 +338,23 @@ def main() -> None:
                     },
                 }
             )
-            st.success("演示决策已生成。")
+            st.success("The demonstration decision has been generated.")
 
     records = st.session_state.history_records
     if records:
         latest = records[-1]
 
-        st.markdown('<div class="card"><div class="section-head">当前状态判定</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><div class="section-head">Current status assessment</div>', unsafe_allow_html=True)
         cs1, cs2 = st.columns([1.0, 1.0])
         with cs1:
-            metric_box("引擎状态识别", STATE_LABELS.get(latest["state_label"], latest["state_label"]), "公开演示版规则引擎")
+            metric_box("Engine state", STATE_LABELS.get(latest["state_label"], latest["state_label"]), "Rule-based demonstration engine")
         with cs2:
-            metric_box("当前监测概况", f'{latest["monitored_value"]:.2f} μg/L', f'目标值 {latest["target_value"]:.2f} μg/L')
+            metric_box("Current monitoring summary", f'{latest["monitored_value"]:.2f} μg/L', f'Target {latest["target_value"]:.2f} μg/L')
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><div class="section-head">本次建议结果</div>', unsafe_allow_html=True)
-        st.write(f"**最终建议技术：** {human_tech_name(latest['final_single_tech'])}")
-        st.write(f"**状态判定说明：** {' '.join(latest['reasons'])}")
+        st.markdown('<div class="card"><div class="section-head">Current recommendation</div>', unsafe_allow_html=True)
+        st.write(f"**Recommended technology:** {human_tech_name(latest['final_single_tech'])}")
+        st.write(f"**Interpretation:** {' '.join(latest['reasons'])}")
         rank_df = pd.DataFrame(
             [
                 {"Rank": idx + 1, "Technology": human_tech_name(item["code"]), "Score": item["score"]}
@@ -386,23 +365,13 @@ def main() -> None:
         st.markdown('</div>', unsafe_allow_html=True)
 
         hist_df = history_to_df(records)
-        st.markdown('<div class="card"><div class="section-head">历史指标推演序列</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><div class="section-head">Historical monitoring sequence</div>', unsafe_allow_html=True)
         st.plotly_chart(make_trend_figure(hist_df, "Target contaminant"), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card"><div class="section-head">决策操作日志</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card"><div class="section-head">Decision log</div>', unsafe_allow_html=True)
         st.dataframe(hist_df, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown(
-        '''<div class="card"><div class="section-head">如何升级成“私有真实版”</div>
-        1. 保持本公开演示版仓库公开。<br>
-        2. 将真实模型、真实数据、真实映射逻辑保存在私有仓库或私有服务器。<br>
-        3. 后续如需保留公开界面但调用私有核心，可把 <code>predict_demo()</code> 替换为私有 API 请求。<br>
-        4. 不要把 <code>.pth</code>、<code>Dataset.csv</code>、<code>rimt_mapping.csv</code> 上传到公开仓库。
-        </div>''',
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":
