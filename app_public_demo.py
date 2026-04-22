@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from datetime import datetime
@@ -47,6 +46,17 @@ DEFAULT_DECISION_PARAMS = {
     "rebound_ratio": 0.15,
     "tailing_improvement_ratio": 0.20,
 }
+DEFAULT_MANUSCRIPT_SIGNATURE = {
+    "organic_contaminants": ["benzene"],
+    "chemical_formulas": ["c6h6"],
+    "industry_subcategory_codes": ["261"],
+    "relevant_industries": ["basic chemical"],
+    "risk_control_and_remediation_targets": ["40", "groundwater"],
+    "scope_of_work": ["groundwater remediation"],
+    "contamination_distribution_range": ["3", "6"],
+}
+DEFAULT_MANUSCRIPT_THRESHOLD = 0.62
+
 
 def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -55,8 +65,19 @@ def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         return default
 
+
 SCORE_PROFILES = get_secret_dict("score_profiles", DEFAULT_SCORE_PROFILES)
 DECISION_PARAMS = get_secret_dict("decision_params", DEFAULT_DECISION_PARAMS)
+MANUSCRIPT_SIGNATURE = get_secret_dict("manuscript_signature", DEFAULT_MANUSCRIPT_SIGNATURE)
+try:
+    MANUSCRIPT_MATCH_THRESHOLD = float(st.secrets.get("manuscript_match_threshold", DEFAULT_MANUSCRIPT_THRESHOLD))
+except Exception:
+    MANUSCRIPT_MATCH_THRESHOLD = DEFAULT_MANUSCRIPT_THRESHOLD
+
+
+def normalize_text(x: Any) -> str:
+    return str(x).strip().lower() if x is not None else ""
+
 
 def normalize_profile(profile_name: str) -> Dict[str, float]:
     raw = SCORE_PROFILES.get(profile_name, {})
@@ -66,16 +87,6 @@ def normalize_profile(profile_name: str) -> Dict[str, float]:
         profile = {k: v / s for k, v in profile.items()}
     return profile
 
-def parse_time(value: str) -> Optional[datetime]:
-    txt = str(value).strip()
-    if not txt:
-        return None
-    for fmt in ("%Y-%m", "%Y/%m", "%Y-%m-%d", "%Y/%m/%d", "%B %Y", "%b %Y"):
-        try:
-            return datetime.strptime(txt, fmt)
-        except ValueError:
-            continue
-    return None
 
 def severity_from_value(value: float, severe_thr: float, mild_thr: float) -> str:
     if value >= severe_thr:
@@ -83,6 +94,7 @@ def severity_from_value(value: float, severe_thr: float, mild_thr: float) -> str
     if value <= mild_thr:
         return "mild"
     return "moderate"
+
 
 def determine_general_state(history: List[Dict[str, Any]], current_value: float, target: float, severe_thr: float, mild_thr: float, rebound_ratio: float, tailing_ratio: float):
     severity = severity_from_value(current_value, severe_thr, mild_thr)
@@ -92,7 +104,8 @@ def determine_general_state(history: List[Dict[str, Any]], current_value: float,
         return f"initial_{severity}", f"initial_{severity}", "initial startup"
     prev = history[-1]["concentration"]
     if prev > 0 and current_value >= prev * (1 + rebound_ratio):
-        return f"rebound_{severity}" if f"rebound_{severity}" in SCORE_PROFILES else f"progressing_{severity}", f"rebound_{severity}", "rebound suspected"
+        profile = f"rebound_{severity}" if f"rebound_{severity}" in SCORE_PROFILES else f"progressing_{severity}"
+        return profile, f"rebound_{severity}", "rebound suspected"
     improvement = (prev - current_value) / prev if prev > 0 else 0.0
     if len(history) >= 2:
         prev2 = history[-2]["concentration"]
@@ -104,6 +117,7 @@ def determine_general_state(history: List[Dict[str, Any]], current_value: float,
         return profile, f"tailing_{severity}", "tailing confirmed"
     return f"progressing_{severity}", f"progressing_{severity}", "control pathway continues"
 
+
 def determine_case_state(history: List[Dict[str, Any]], current_value: float, target: float):
     n = len(history)
     if current_value <= target:
@@ -112,14 +126,17 @@ def determine_case_state(history: List[Dict[str, Any]], current_value: float, ta
         return "case_t1", "T1", "early-stage intensive control"
     return "case_t2", "T2", "mid-stage strategy adjustment"
 
+
 def profile_to_table(profile_name: str) -> pd.DataFrame:
     profile = normalize_profile(profile_name)
     rows = [{"Technology": TECH_LABELS[t], "Code": t, "Score": round(profile[t], 4)} for t in TECHNOLOGY_ORDER]
     return pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
 
+
 def best_tech(profile_name: str) -> str:
     profile = normalize_profile(profile_name)
     return max(profile.items(), key=lambda kv: kv[1])[0]
+
 
 def make_chart(df: pd.DataFrame, target_value: float) -> go.Figure:
     fig = go.Figure()
@@ -146,9 +163,50 @@ def make_chart(df: pd.DataFrame, target_value: float) -> go.Figure:
     )
     return fig
 
+
 def init_state():
     if "records" not in st.session_state:
         st.session_state.records = []
+
+
+def token_match_ratio(text: str, expected_tokens: List[str]) -> float:
+    if not expected_tokens:
+        return 0.0
+    txt = normalize_text(text)
+    if not txt:
+        return 0.0
+    hits = sum(1 for tok in expected_tokens if normalize_text(tok) in txt)
+    return hits / max(len(expected_tokens), 1)
+
+
+def manuscript_similarity(inputs: Dict[str, str]) -> float:
+    mapping = {
+        "organic_contaminants": inputs.get("org", ""),
+        "chemical_formulas": inputs.get("formulas", ""),
+        "industry_subcategory_codes": inputs.get("ind_code", ""),
+        "relevant_industries": inputs.get("rel_ind", ""),
+        "risk_control_and_remediation_targets": inputs.get("target_text", ""),
+        "scope_of_work": inputs.get("scope", ""),
+        "contamination_distribution_range": inputs.get("dist_range", ""),
+    }
+    ratios = []
+    for k, expected in MANUSCRIPT_SIGNATURE.items():
+        if isinstance(expected, (list, tuple)):
+            ratios.append(token_match_ratio(mapping.get(k, ""), list(expected)))
+        else:
+            ratios.append(token_match_ratio(mapping.get(k, ""), [str(expected)]))
+    ratios = [r for r in ratios if r >= 0]
+    return sum(ratios) / max(len(ratios), 1)
+
+
+def should_use_manuscript_mode(inputs: Dict[str, str], history: List[Dict[str, Any]]) -> bool:
+    similarity = manuscript_similarity(inputs)
+    if similarity >= MANUSCRIPT_MATCH_THRESHOLD:
+        return True
+    if history and any(str(rec.get("phase", "")).startswith("T") for rec in history):
+        return True
+    return False
+
 
 init_state()
 
@@ -171,8 +229,6 @@ st.markdown('<div class="title-box"><h1>KET-Based Intelligent Decision Support S
 
 with st.sidebar:
     st.header("KET input features")
-    mode = st.radio("Decision mode", ["General dynamic decision", "Manuscript case reproduction"], index=0)
-    st.caption("Use general mode for arbitrary scenarios. Use manuscript mode only to reproduce the case-study pathway in the paper.")
 
     with st.expander("Hydrogeological perspective", expanded=True):
         hydro = st.text_area("Hydrogeological conditions", value="")
@@ -224,7 +280,28 @@ if run:
     try:
         val = float(current_value)
         history = st.session_state.records
-        if mode == "Manuscript case reproduction":
+        current_inputs = {
+            "hydro": hydro,
+            "soil": soil,
+            "spm": spm,
+            "target_text": target_text,
+            "rel_ind": rel_ind,
+            "ind_code": ind_code,
+            "heavy": heavy,
+            "chem_symbols": chem_symbols,
+            "org": org,
+            "formulas": formulas,
+            "abbr": abbr,
+            "other": other,
+            "severity_text": severity_text,
+            "dist_range": dist_range,
+            "cost": cost,
+            "duration": duration,
+            "scope": scope,
+            "impacts": impacts,
+        }
+        use_case_mode = should_use_manuscript_mode(current_inputs, history)
+        if use_case_mode:
             profile_name, phase, diagnosis = determine_case_state(history, val, target_value)
         else:
             profile_name, phase, diagnosis = determine_general_state(
@@ -255,7 +332,7 @@ if records:
     m1, m2, m3 = st.columns(3)
     m1.markdown(f'<div class="metric-box"><div class="metric-label">Recommended technology</div><div class="metric-value">{latest["technology"]}</div><div class="metric-sub">{latest["phase"]}</div></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-box"><div class="metric-label">Diagnosis</div><div class="metric-value">{latest["diagnosis"]}</div><div class="metric-sub">{latest["severity_feature"]}</div></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-box"><div class="metric-label">Score profile</div><div class="metric-value">{latest["profile_name"]}</div><div class="metric-sub">Read from private deployment secrets</div></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="metric-box"><div class="metric-label">Score profile</div><div class="metric-value">{latest["profile_name"]}</div><div class="metric-sub">Private deployment profile</div></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card"><div class="section-head">KET-informed technology scores</div>', unsafe_allow_html=True)
