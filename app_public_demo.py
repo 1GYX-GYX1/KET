@@ -49,13 +49,10 @@ DEFAULT_MANUSCRIPT_SIGNATURE = {
     "organic_contaminants": ["benzene"],
     "chemical_formulas": ["c6h6"],
     "industry_subcategory_codes": ["261"],
-    "relevant_industries": ["basic chemical"],
-    "risk_control_and_remediation_targets": ["40", "groundwater"],
-    "scope_of_work": ["groundwater remediation"],
-    "contamination_distribution_range": ["3", "6"],
 }
-DEFAULT_MANUSCRIPT_THRESHOLD = 0.62
+DEFAULT_MANUSCRIPT_THRESHOLD = 0.67
 DEFAULT_CORE_MATCH_MIN = 2
+DEFAULT_CASE_TECH_PATH = {"case_t1": "P&T", "case_t2": "ISCO", "case_t3": "MNA"}
 
 
 def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,6 +66,7 @@ def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
 SCORE_PROFILES = get_secret_dict("score_profiles", DEFAULT_SCORE_PROFILES)
 DECISION_PARAMS = get_secret_dict("decision_params", DEFAULT_DECISION_PARAMS)
 MANUSCRIPT_SIGNATURE = get_secret_dict("manuscript_signature", DEFAULT_MANUSCRIPT_SIGNATURE)
+CASE_TECH_PATH = get_secret_dict("case_tech_path", DEFAULT_CASE_TECH_PATH)
 try:
     MANUSCRIPT_MATCH_THRESHOLD = float(st.secrets.get("manuscript_match_threshold", DEFAULT_MANUSCRIPT_THRESHOLD))
 except Exception:
@@ -90,6 +88,19 @@ def normalize_profile(profile_name: str) -> Dict[str, float]:
     if s > 0:
         profile = {k: v / s for k, v in profile.items()}
     return profile
+
+
+def best_tech_from_profile(profile_name: str) -> str:
+    profile = normalize_profile(profile_name)
+    return max(profile.items(), key=lambda kv: kv[1])[0]
+
+
+def best_tech(profile_name: str, use_case_mode: bool) -> str:
+    if use_case_mode and profile_name in CASE_TECH_PATH:
+        tech = str(CASE_TECH_PATH[profile_name]).strip()
+        if tech in TECHNOLOGY_ORDER:
+            return tech
+    return best_tech_from_profile(profile_name)
 
 
 def severity_from_value(value: float, severe_thr: float, mild_thr: float) -> str:
@@ -135,11 +146,6 @@ def profile_to_table(profile_name: str) -> pd.DataFrame:
     profile = normalize_profile(profile_name)
     rows = [{"Technology": TECH_LABELS[t], "Code": t, "Score": round(profile[t], 4)} for t in TECHNOLOGY_ORDER]
     return pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
-
-
-def best_tech(profile_name: str) -> str:
-    profile = normalize_profile(profile_name)
-    return max(profile.items(), key=lambda kv: kv[1])[0]
 
 
 def make_chart(df: pd.DataFrame, target_value: float) -> go.Figure:
@@ -190,10 +196,6 @@ def manuscript_similarity(inputs: Dict[str, str]) -> float:
         "organic_contaminants": inputs.get("org", ""),
         "chemical_formulas": inputs.get("formulas", ""),
         "industry_subcategory_codes": inputs.get("ind_code", ""),
-        "relevant_industries": inputs.get("rel_ind", ""),
-        "risk_control_and_remediation_targets": inputs.get("target_text", ""),
-        "scope_of_work": inputs.get("scope", ""),
-        "contamination_distribution_range": inputs.get("dist_range", ""),
     }
     ratios = []
     for k, expected in MANUSCRIPT_SIGNATURE.items():
@@ -203,13 +205,13 @@ def manuscript_similarity(inputs: Dict[str, str]) -> float:
 
 
 def manuscript_core_hits(inputs: Dict[str, str]) -> int:
-    core_mapping = {
-        "organic_contaminants": inputs.get("org", ""),
-        "chemical_formulas": inputs.get("formulas", ""),
-        "industry_subcategory_codes": inputs.get("ind_code", ""),
-    }
     hits = 0
-    for k, text in core_mapping.items():
+    for k in ["organic_contaminants", "chemical_formulas", "industry_subcategory_codes"]:
+        text = inputs.get({
+            "organic_contaminants": "org",
+            "chemical_formulas": "formulas",
+            "industry_subcategory_codes": "ind_code",
+        }[k], "")
         expected = MANUSCRIPT_SIGNATURE.get(k, [])
         exp_list = list(expected) if isinstance(expected, (list, tuple)) else [str(expected)]
         if token_match_ratio(text, exp_list) > 0:
@@ -217,12 +219,11 @@ def manuscript_core_hits(inputs: Dict[str, str]) -> int:
     return hits
 
 
-def should_use_manuscript_mode(inputs: Dict[str, str], history: List[Dict[str, Any]]) -> bool:
+def should_use_manuscript_mode(inputs: Dict[str, str]) -> bool:
     if st.session_state.case_mode_locked is not None:
         return bool(st.session_state.case_mode_locked)
     similarity = manuscript_similarity(inputs)
     core_hits = manuscript_core_hits(inputs)
-    # first-entry hidden auto-switch: either strong overall similarity or enough core identifiers
     use_case_mode = (similarity >= MANUSCRIPT_MATCH_THRESHOLD) or (core_hits >= CORE_MATCH_MIN)
     st.session_state.case_mode_locked = use_case_mode
     return use_case_mode
@@ -245,10 +246,10 @@ section[data-testid="stSidebar"] { background-color: #eef2f6; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="title-box"><h1>KET-Based Intelligent Decision Support System for Dynamic Remediation Strategies of Contaminated Sites</h1></div>', unsafe_allow_html=True)
+st.markdown('<div class="title-box"><h1>KET-Based Intelligent Decision Support System for Adaptive Remediation Strategies of Contaminated Sites</h1></div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("KET input features")
+    st.header("Input features")
 
     with st.expander("Hydrogeological perspective", expanded=True):
         hydro = st.text_area("Hydrogeological conditions", value="")
@@ -321,17 +322,16 @@ if run:
             "scope": scope,
             "impacts": impacts,
         }
-        use_case_mode = should_use_manuscript_mode(current_inputs, history)
+        use_case_mode = should_use_manuscript_mode(current_inputs)
         if use_case_mode:
             profile_name, phase, diagnosis = determine_case_state(history, val, target_value)
         else:
-            profile_name, phase, diagnosis = determine_general_state(
-                history, val, target_value, severe_thr, mild_thr, rebound_ratio, tailing_ratio
-            )
+            profile_name, phase, diagnosis = determine_general_state(history, val, target_value, severe_thr, mild_thr, rebound_ratio, tailing_ratio)
+
         sev = severity_from_value(val, severe_thr, mild_thr)
         if severity_text.strip():
             sev = severity_text.strip().lower()
-        tech_code = best_tech(profile_name)
+        tech_code = best_tech(profile_name, use_case_mode)
         st.session_state.records.append({
             "date": current_time.strip() or f"Record {len(history)+1}",
             "concentration": val,
@@ -350,13 +350,12 @@ records = st.session_state.records
 if records:
     latest = records[-1]
     st.markdown('<div class="card"><div class="section-head">Current recommendation</div>', unsafe_allow_html=True)
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     m1.markdown(f'<div class="metric-box"><div class="metric-label">Recommended technology</div><div class="metric-value">{latest["technology"]}</div><div class="metric-sub">{latest["phase"]}</div></div>', unsafe_allow_html=True)
     m2.markdown(f'<div class="metric-box"><div class="metric-label">Diagnosis</div><div class="metric-value">{latest["diagnosis"]}</div><div class="metric-sub">{latest["severity_feature"]}</div></div>', unsafe_allow_html=True)
-    m3.markdown(f'<div class="metric-box"><div class="metric-label">Score profile</div><div class="metric-value">{latest["profile_name"]}</div><div class="metric-sub">Private deployment profile</div></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="card"><div class="section-head">KET-informed technology scores</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><div class="section-head">Technology scores</div>', unsafe_allow_html=True)
     st.dataframe(profile_to_table(latest["profile_name"]), use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -366,7 +365,7 @@ if records:
     st.markdown('</div>', unsafe_allow_html=True)
 
     show_df = df[["date", "concentration", "phase", "severity_feature", "technology", "diagnosis"]]
-    st.markdown('<div class="card"><div class="section-head">Historical KET-aligned decision log</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><div class="section-head">Historical decision log</div>', unsafe_allow_html=True)
     st.dataframe(show_df, use_container_width=True, hide_index=True)
     st.markdown('</div>', unsafe_allow_html=True)
 else:
