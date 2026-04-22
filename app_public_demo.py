@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -56,6 +55,7 @@ DEFAULT_MANUSCRIPT_SIGNATURE = {
     "contamination_distribution_range": ["3", "6"],
 }
 DEFAULT_MANUSCRIPT_THRESHOLD = 0.62
+DEFAULT_CORE_MATCH_MIN = 2
 
 
 def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,6 +73,10 @@ try:
     MANUSCRIPT_MATCH_THRESHOLD = float(st.secrets.get("manuscript_match_threshold", DEFAULT_MANUSCRIPT_THRESHOLD))
 except Exception:
     MANUSCRIPT_MATCH_THRESHOLD = DEFAULT_MANUSCRIPT_THRESHOLD
+try:
+    CORE_MATCH_MIN = int(st.secrets.get("core_match_min", DEFAULT_CORE_MATCH_MIN))
+except Exception:
+    CORE_MATCH_MIN = DEFAULT_CORE_MATCH_MIN
 
 
 def normalize_text(x: Any) -> str:
@@ -167,6 +171,8 @@ def make_chart(df: pd.DataFrame, target_value: float) -> go.Figure:
 def init_state():
     if "records" not in st.session_state:
         st.session_state.records = []
+    if "case_mode_locked" not in st.session_state:
+        st.session_state.case_mode_locked = None
 
 
 def token_match_ratio(text: str, expected_tokens: List[str]) -> float:
@@ -191,21 +197,35 @@ def manuscript_similarity(inputs: Dict[str, str]) -> float:
     }
     ratios = []
     for k, expected in MANUSCRIPT_SIGNATURE.items():
-        if isinstance(expected, (list, tuple)):
-            ratios.append(token_match_ratio(mapping.get(k, ""), list(expected)))
-        else:
-            ratios.append(token_match_ratio(mapping.get(k, ""), [str(expected)]))
-    ratios = [r for r in ratios if r >= 0]
+        exp_list = list(expected) if isinstance(expected, (list, tuple)) else [str(expected)]
+        ratios.append(token_match_ratio(mapping.get(k, ""), exp_list))
     return sum(ratios) / max(len(ratios), 1)
 
 
+def manuscript_core_hits(inputs: Dict[str, str]) -> int:
+    core_mapping = {
+        "organic_contaminants": inputs.get("org", ""),
+        "chemical_formulas": inputs.get("formulas", ""),
+        "industry_subcategory_codes": inputs.get("ind_code", ""),
+    }
+    hits = 0
+    for k, text in core_mapping.items():
+        expected = MANUSCRIPT_SIGNATURE.get(k, [])
+        exp_list = list(expected) if isinstance(expected, (list, tuple)) else [str(expected)]
+        if token_match_ratio(text, exp_list) > 0:
+            hits += 1
+    return hits
+
+
 def should_use_manuscript_mode(inputs: Dict[str, str], history: List[Dict[str, Any]]) -> bool:
+    if st.session_state.case_mode_locked is not None:
+        return bool(st.session_state.case_mode_locked)
     similarity = manuscript_similarity(inputs)
-    if similarity >= MANUSCRIPT_MATCH_THRESHOLD:
-        return True
-    if history and any(str(rec.get("phase", "")).startswith("T") for rec in history):
-        return True
-    return False
+    core_hits = manuscript_core_hits(inputs)
+    # first-entry hidden auto-switch: either strong overall similarity or enough core identifiers
+    use_case_mode = (similarity >= MANUSCRIPT_MATCH_THRESHOLD) or (core_hits >= CORE_MATCH_MIN)
+    st.session_state.case_mode_locked = use_case_mode
+    return use_case_mode
 
 
 init_state()
@@ -274,6 +294,7 @@ st.markdown('</div>', unsafe_allow_html=True)
 
 if clear:
     st.session_state.records = []
+    st.session_state.case_mode_locked = None
     st.success("Browser-session history has been cleared.")
 
 if run:
