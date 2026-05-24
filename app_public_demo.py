@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="KET-based Remediation Decision Platform", layout="wide")
+st.set_page_config(page_title="KET-based Contaminated Groundwater Remediation Decision Platform", layout="wide")
 
 TECHNOLOGY_ORDER = ["AOPs", "AS", "P&T", "ISCO", "ISCR", "ISB", "SF", "SS", "MNA", "PRB"]
 TECH_LABELS = {
@@ -246,30 +246,30 @@ section[data-testid="stSidebar"] { background-color: #eef2f6; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="title-box"><h1>KET-Based Intelligent Decision Support System for Adaptive Remediation Strategies of Contaminated Sites</h1></div>', unsafe_allow_html=True)
+st.markdown('<div class="title-box"><h1>KET-Based Intelligent Decision Support System for Adaptive Remediation Strategies of Contaminated Groundwater</h1></div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("Input features")
 
-    with st.expander("Hydrogeological perspective", expanded=True):
-        hydro = st.text_area("Hydrogeological conditions", value="")
-        soil = st.text_area("Soil texture and physicochemical properties", value="")
-    with st.expander("Remediation objective perspective", expanded=True):
+    with st.expander("Hydrogeological", expanded=True):
+        hydro = st.text_area("Saturated-zone hydrogeological conditions", value="")
+        unsat_zone = st.text_area("Unsaturated-zone texture and physicochemical properties", value="")
+    with st.expander("Remediation objective", expanded=True):
         spm = st.text_area("Secondary pollution prevention measures", value="")
         target_text = st.text_area("Risk control and remediation targets", value="")
         rel_ind = st.text_input("Relevant industries", value="")
         ind_code = st.text_input("Industry subcategory codes", value="")
-    with st.expander("Contaminant properties perspective", expanded=True):
+    with st.expander("Contaminant properties", expanded=True):
         heavy = st.text_input("Heavy metals", value="")
         chem_symbols = st.text_input("Chemical symbols", value="")
         org = st.text_input("Organic contaminants", value="")
         formulas = st.text_input("Chemical formulas", value="")
         abbr = st.text_input("Abbreviations", value="")
         other = st.text_input("Other pollutants", value="")
-    with st.expander("Site pollution characteristics perspective", expanded=True):
+    with st.expander("Contamination characteristics", expanded=True):
         severity_text = st.text_input("Contamination severity (optional)", value="")
         dist_range = st.text_input("Contamination distribution range", value="")
-    with st.expander("Engineering-economic perspective", expanded=True):
+    with st.expander("Engineering-economic", expanded=True):
         cost = st.text_input("Cost", value="")
         duration = st.text_input("Duration", value="")
         scope = st.text_input("Scope of work", value="")
@@ -304,7 +304,7 @@ if run:
         history = st.session_state.records
         current_inputs = {
             "hydro": hydro,
-            "soil": soil,
+            "unsat_zone": unsat_zone,
             "spm": spm,
             "target_text": target_text,
             "rel_ind": rel_ind,
