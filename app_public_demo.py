@@ -82,6 +82,58 @@ SCORE_PROFILES = get_secret_dict("score_profiles", DEFAULT_SCORE_PROFILES)
 DECISION_PARAMS = get_secret_dict("decision_params", DEFAULT_DECISION_PARAMS)
 MANUSCRIPT_SIGNATURE = get_secret_dict("manuscript_signature", DEFAULT_MANUSCRIPT_SIGNATURE)
 CASE_TECH_PATH = get_secret_dict("case_tech_path", DEFAULT_CASE_TECH_PATH)
+# ---------------------------------------------------------------------
+# Forced PCE-CVOC case profiles
+# This block prevents Streamlit secrets or incomplete profile loading
+# from removing the PCE-CVOC decision path.
+# ---------------------------------------------------------------------
+PCE_CVOC_SCORE_PROFILES = {
+    "pce_cvoc_t1": {
+        "ISCR": 0.40,
+        "ISB": 0.24,
+        "PRB": 0.13,
+        "P&T": 0.08,
+        "MNA": 0.06,
+        "ISCO": 0.04,
+        "AS": 0.02,
+        "AOPs": 0.01,
+        "SF": 0.01,
+        "SS": 0.01,
+    },
+    "pce_cvoc_t2": {
+        "ISB": 0.42,
+        "ISCR": 0.22,
+        "PRB": 0.13,
+        "MNA": 0.10,
+        "P&T": 0.04,
+        "ISCO": 0.03,
+        "AS": 0.02,
+        "AOPs": 0.02,
+        "SF": 0.01,
+        "SS": 0.01,
+    },
+    "pce_cvoc_t3": {
+        "MNA": 0.43,
+        "ISB": 0.22,
+        "PRB": 0.14,
+        "ISCR": 0.09,
+        "P&T": 0.04,
+        "ISCO": 0.03,
+        "AS": 0.02,
+        "AOPs": 0.01,
+        "SF": 0.01,
+        "SS": 0.01,
+    },
+}
+
+PCE_CVOC_TECH_PATH = {
+    "pce_cvoc_t1": "ISCR",
+    "pce_cvoc_t2": "ISB",
+    "pce_cvoc_t3": "MNA",
+}
+
+SCORE_PROFILES.update(PCE_CVOC_SCORE_PROFILES)
+CASE_TECH_PATH.update(PCE_CVOC_TECH_PATH)
 try:
     MANUSCRIPT_MATCH_THRESHOLD = float(st.secrets.get("manuscript_match_threshold", DEFAULT_MANUSCRIPT_THRESHOLD))
 except Exception:
