@@ -37,6 +37,14 @@ DEFAULT_SCORE_PROFILES = {
     "case_t1": {"P&T": 0.43, "ISCO": 0.34, "AS": 0.16, "PRB": 0.03, "AOPs": 0.02, "MNA": 0.01, "ISB": 0.01, "ISCR": 0.00, "SF": 0.00, "SS": 0.00},
     "case_t2": {"ISCO": 0.39, "AS": 0.27, "PRB": 0.18, "P&T": 0.07, "AOPs": 0.04, "ISCR": 0.03, "ISB": 0.01, "MNA": 0.01, "SF": 0.00, "SS": 0.00},
     "case_t3": {"MNA": 0.41, "ISB": 0.24, "PRB": 0.19, "ISCO": 0.07, "ISCR": 0.04, "P&T": 0.03, "AS": 0.01, "AOPs": 0.01, "SF": 0.00, "SS": 0.00},
+
+    # Case-40 / PCE-monitored mixed CVOC case.
+    # This profile is used when PCE is selected as the displayed target contaminant,
+    # but the input text also indicates a mixed chlorinated ethane/ethene system
+    # such as 1,1,1-TCA + PCE/TCE/DCE.
+    "pce_cvoc_t1": {"ISCR": 0.40, "ISB": 0.24, "PRB": 0.13, "P&T": 0.08, "MNA": 0.06, "ISCO": 0.04, "AS": 0.02, "AOPs": 0.01, "SF": 0.01, "SS": 0.01},
+    "pce_cvoc_t2": {"ISB": 0.42, "ISCR": 0.22, "PRB": 0.13, "MNA": 0.10, "P&T": 0.04, "ISCO": 0.03, "AS": 0.02, "AOPs": 0.02, "SF": 0.01, "SS": 0.01},
+    "pce_cvoc_t3": {"MNA": 0.43, "ISB": 0.22, "PRB": 0.14, "ISCR": 0.09, "P&T": 0.04, "ISCO": 0.03, "AS": 0.02, "AOPs": 0.01, "SF": 0.01, "SS": 0.01},
 }
 DEFAULT_DECISION_PARAMS = {
     "target_value": 40.0,
@@ -52,7 +60,14 @@ DEFAULT_MANUSCRIPT_SIGNATURE = {
 }
 DEFAULT_MANUSCRIPT_THRESHOLD = 0.67
 DEFAULT_CORE_MATCH_MIN = 2
-DEFAULT_CASE_TECH_PATH = {"case_t1": "P&T", "case_t2": "ISCO", "case_t3": "MNA"}
+DEFAULT_CASE_TECH_PATH = {
+    "case_t1": "P&T",
+    "case_t2": "ISCO",
+    "case_t3": "MNA",
+    "pce_cvoc_t1": "ISCR",
+    "pce_cvoc_t2": "ISB",
+    "pce_cvoc_t3": "MNA",
+}
 
 
 def get_secret_dict(key: str, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,6 +244,78 @@ def should_use_manuscript_mode(inputs: Dict[str, str]) -> bool:
     return use_case_mode
 
 
+def is_pce_cvoc_case(inputs: Dict[str, str]) -> bool:
+    """
+    Detect a PCE-monitored mixed CVOC case.
+
+    This is intended for external non-identical cases such as the Case-40 style
+    groundwater remediation case. PCE can be used as the displayed target
+    contaminant, but the decision context must indicate mixed chlorinated
+    ethanes/ethenes or reductive-dechlorination-related co-contaminants.
+    """
+    txt = normalize_text(" ".join(str(v) for v in inputs.values()))
+
+    has_pce = any(tok in txt for tok in [
+        "pce",
+        "perchloroethylene",
+        "tetrachloroethylene",
+        "c2cl4",
+    ])
+
+    has_cvoc_context = any(tok in txt for tok in [
+        "cvoc",
+        "cvocs",
+        "chlorinated",
+        "chlorinated ethene",
+        "chlorinated ethenes",
+        "chlorinated ethylene",
+        "chlorinated ethylenes",
+        "chlorinated ethane",
+        "chlorinated ethanes",
+        "commingled",
+        "mixed chlorinated",
+    ])
+
+    has_reductive_context = any(tok in txt for tok in [
+        "1,1,1-tca",
+        "111-tca",
+        "tca",
+        "trichloroethane",
+        "1,1-dce",
+        "11-dce",
+        "dce",
+        "tce",
+        "trichloroethylene",
+        "vinyl chloride",
+        "vc",
+        "zvi",
+        "zero valent iron",
+        "zero-valent iron",
+        "reductive",
+        "reduction",
+        "bioremediation",
+        "bioaugmentation",
+    ])
+
+    return has_pce and has_cvoc_context and has_reductive_context
+
+
+def determine_pce_cvoc_state(history: List[Dict[str, Any]], current_value: float, target: float):
+    """
+    Stage logic for a PCE-monitored mixed CVOC case.
+
+    The sequence is encoded as ISCR -> ISB -> MNA.
+    Stage 3 is triggered when the monitored value reaches the target threshold,
+    which can represent either a concentration target or a normalized 90%
+    reduction threshold.
+    """
+    if current_value <= target:
+        return "pce_cvoc_t3", "T3", "post-remediation monitoring"
+    if not history:
+        return "pce_cvoc_t1", "T1", "source-zone reductive treatment"
+    return "pce_cvoc_t2", "T2", "enhanced reductive biodegradation"
+
+
 init_state()
 
 st.markdown("""
@@ -322,11 +409,23 @@ if run:
             "scope": scope,
             "impacts": impacts,
         }
-        use_case_mode = should_use_manuscript_mode(current_inputs)
-        if use_case_mode:
-            profile_name, phase, diagnosis = determine_case_state(history, val, target_value)
+        if is_pce_cvoc_case(current_inputs):
+            use_case_mode = True
+            profile_name, phase, diagnosis = determine_pce_cvoc_state(history, val, target_value)
         else:
-            profile_name, phase, diagnosis = determine_general_state(history, val, target_value, severe_thr, mild_thr, rebound_ratio, tailing_ratio)
+            use_case_mode = should_use_manuscript_mode(current_inputs)
+            if use_case_mode:
+                profile_name, phase, diagnosis = determine_case_state(history, val, target_value)
+            else:
+                profile_name, phase, diagnosis = determine_general_state(
+                    history,
+                    val,
+                    target_value,
+                    severe_thr,
+                    mild_thr,
+                    rebound_ratio,
+                    tailing_ratio,
+                )
 
         sev = severity_from_value(val, severe_thr, mild_thr)
         if severity_text.strip():
